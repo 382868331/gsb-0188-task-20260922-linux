@@ -1,8 +1,9 @@
-# orient_audit — 四面体网格的定向与边界审计
+# orient_audit — 四面体网格的定向、边界审计与内部边分裂
 
 离线、纯标准库的可复用题库：输入有理坐标顶点与最多 500 个四面体，
 精确判定并修复单元定向，建立面关联，报告边界面、非流形、连通分量、
-总有向体积与缺陷位置。
+总有向体积与缺陷位置；并支持在内部边的有理参数位置插点、重建相邻
+四面体（保留材料标签与保护面，失败原子回滚）。
 
 - **Python 版本**：CPython 3.14.7（仅用到 3.10+ 即有的语法特性）。
 - **依赖**：无第三方依赖，只用标准库（`fractions`、`dataclasses`、
@@ -16,7 +17,7 @@
 # 必要测试（在仓库根目录执行）
 python -m unittest discover -s tests -v
 
-# 固定输入演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep/预录）
+# 固定输入演示（约 0.05 秒，远小于 90 秒预算；真实计算，无 sleep/预录）
 python demo.py
 ```
 
@@ -25,8 +26,10 @@ python demo.py
 ```python
 from orient_audit import (
     TetMesh, audit, repair_orientation,      # 核心入口
+    split_interior_edge, EdgeSplitResult,    # 内部边分裂
     AuditReport, BoundaryFace, InteriorFace, NonManifoldFace,  # 结果类型
     MeshInputError, DuplicateTetrahedraError, ZeroVolumeError, # 异常
+    EdgeSplitError, ProtectedFaceError,      # 分裂相关异常
     MAX_TETS,                                # 500
 )
 ```
@@ -45,6 +48,12 @@ from orient_audit import (
 - **重复单元单独报错**：四个顶点集合相同即视为重复（与排列顺序无关），
   抛 `DuplicateTetrahedraError`，其 `duplicates` 列出全部重复组
   `(排序后的顶点元组, (单元下标...))`。
+- 可选关键字参数（默认行为与旧版完全一致）：
+  - `tet_labels`：每个四面体的**材料标签**序列（任意可哈希值，默认全
+    `0`）；长度必须与单元数一致，否则 `MeshInputError` 于 `tet_labels`。
+  - `protected_faces`：额外的**显式保护面**序列，每项为 3 个合法互异
+    顶点下标；内部去重排序。全部边界面**始终隐式受保护**，此处用于
+    材料分界面等内部保护面；非法面可定位（如 `protected_faces[2][1]`）。
 
 ### `audit(mesh) -> AuditReport`（只读，不修改输入）
 
@@ -74,6 +83,63 @@ from orient_audit import (
   （`tet_indices` 列出全部），不返回部分修改，原网格保持不变；
 - **修复不移动顶点**：返回新网格，顶点坐标对象恒等保留（有断言守护）；
 - 非流形/定向冲突属于拓扑状态，由 `audit` 报告，不阻止逐单元定向修复。
+
+### `split_interior_edge(mesh, a, b, t=1/2) -> EdgeSplitResult`
+
+在内部边 `(a, b)` 的有理参数位置插点 `P = A + t·(B − A)`（要求
+`0 < t < 1`），把每个含该边的四面体（“星内”单元）沿切面
+`{P, u, w}` 一分为二，其余单元原样保留。`t` 接受 `int`、
+`fractions.Fraction` 与有理字符串（**拒绝 `float`/`bool`**）。
+
+槽位替换（`u,w` 是该单元除 a,b 外的另两个顶点，保持原序）：
+
+```
+T_a = (P, b, u, w)   # a 槽换成 P，精确 6 倍体积 = (1−t)·V6
+T_b = (a, P, u, w)   # b 槽换成 P，精确 6 倍体积 = t·V6
+```
+
+两子单元与父单元体积严格同号（t、1−t 为正），**朝向自然保持**；
+两个子单元都**继承父单元材料标签**；切面 `{P,u,w}` 恰被两子单元以
+相反诱导朝向共享。结果字段：
+
+| 字段 | 含义 |
+|---|---|
+| `mesh` | 分裂后的**新** `TetMesh`（旧对象不被修改） |
+| `edge` / `parameter` / `new_vertex_index` | 分裂边、实际 t、新点下标（= 原顶点数） |
+| `star_tet_indices` | 被分裂的原单元下标（升序） |
+| `child_tet_pairs` | `(原单元, (T_a 新下标, T_b 新下标))`，按原下标升序 |
+| `untouched_tet_indices` | 原样保留单元的新下标（升序） |
+
+`EdgeSplitResult` 是返回状态；旧调用只传 `(vertices, tets)` 时
+`tet_labels` 全为 `0`、`protected_faces` 为空，行为与历史版本逐字节一致。
+
+**保护边界**：全部边界面默认受保护——边界边上的分裂会把边界三角面
+一分为二，一律抛 `ProtectedFaceError`（`boundary_faces` 列出受冒犯面，
+边界边通常冒犯 2 个相邻边界三角面）；落在 `protected_faces`
+显式保护面上的边抛同一异常，键列在 `explicit_faces`。
+
+**其它拒绝**（`EdgeSplitError`，字段 `reason` 为稳定短码，
+`tet_indices` 给涉及单元）：
+
+| `reason` | 触发条件 |
+|---|---|
+| `edge_not_found` | 没有任何四面体同时含 a、b（不是网格的边） |
+| `protected_face` | 边在边界面或显式保护面上（子类 `ProtectedFaceError`） |
+| `non_manifold_edge` | 含该边的面被 >2 个单元引用（星在链环顶点处 >2 重） |
+| `disconnected_link` | 该边穿过多个互不接触单元片（链环是多个分离环，夹伤非流形） |
+| `zero_volume_star` | 星内存在零体积单元，分裂会产生退化子单元 |
+| `too_many_tets` | 分裂后单元数超过 `MAX_TETS`（500） |
+| `t_out_of_range` | t 不在开区间 `(0,1)` |
+
+输入结构问题（端点非 int/bool/越界、a==b、t 非有理数）抛
+`MeshInputError` 并带 `location`（`a`/`b`/`t`）。**原子语义**：
+`TetMesh` 不可变，所有检查在构造新对象之前完成，成功路径还跑一遍
+独立不变量自检（总体积精确守恒、边界面键集合逐点不变、切面成对反向、
+不新增非流形面）；任何失败只有异常抛出，调用方网格与审计状态完全不变。
+
+与 `repair_orientation` 的协作：分裂保持每个子单元的体积符号，因此
+先分裂后修复、或先修复后分裂都定义良好；`repair_orientation`
+逐单元翻转时材料标签与保护面随单元位置原样保留。
 
 ## 面关联语义（无序三点键）
 
@@ -114,6 +180,19 @@ from orient_audit import (
 - **`audit` 宽容、`repair` 严格**：审计如实报告零体积单元；修复对零体积
   直接拒绝（交换顶点不可能让零行列式非零）。
 - 连通分量按“共享完整三点面”的并查集计算；仅共享棱或点不算相连。
+- **分裂只允许内部边、边界默认保护**：题面要求不破坏保护边界，因此边
+  界面上的边与显式保护面上的边一律拒绝，而不是“顺手”细分边界三角；
+  这样分裂后边界面三点键集合可证明逐点不变。
+- **星的合法性用边链环（link）判定**：内部边的星是一圈四面体，链环
+  必须是单个简单环。链环面重数 >2 是非流形边；链环是多个分离环是
+  “夹伤”边（一条边穿多张片）。两者都无法唯一定义分裂后的邻接，先于
+  几何构造拒绝。
+- **槽位替换而非重排**：子单元直接在父单元顶点序上把 a 槽或 b 槽换成
+  新点，行列式线性给出 (1−t)、t 的体积系数，无需搜索/翻转即可保证朝向；
+  材料标签按父子关系逐格继承。
+- **先全部检查、后一次构造、再过独立自检**：所有拒绝发生在任何新对象
+  之前；不可变数据结构本身保证失败无残留，成功路径的不变量自检是
+  纵深防御，而不是回滚机制。
 
 ## 验收要点与独立核对
 
@@ -129,6 +208,26 @@ from orient_audit import (
   三单元共面的非流形、共享面同向冲突、多个连通分量、500 上限边界、
   bool/float/NaN/Infinity/越界等非法输入定位。
 
+### 内部边分裂的独立核对
+
+- 外四面体（底面积 8、高 4，解析体积 32/3）内取严格内点连四面的
+  **重心剖分**（4 个等体积子体，各 8/3），对内部边 `(4,0)` 在
+  `t=1/3` 分裂：3 个邻接体各一分为二（4→7 单元）。
+- **插点坐标**按 `P=A+t(B−A)` 手算 = `(2/3,2/3,2/3)`；
+  **子体积解析关系** `(1−t)·V6 = 32/3`、`t·V6 = 16/3` 逐对核对，
+  并用 `tests/reference.py` 的 **4×4 Bareiss 独立行列式**（不 import
+  被测核心的 3×3 余子式路径）对“旧顶点+新点”的完整坐标表重算。
+- **总体积守恒**：核心行列式和与独立面通量公式在分裂前后都给出
+  32/3；边界面三点键集合逐点相等；每个切面恰被两子单元反向共享。
+- **反向边对称**：`split(a,b,1/3)` 与 `split(b,a,2/3)` 得到同一插点。
+- **材料标签**：两子单元都等于父标签，未参与单元标签不变。
+- 失败用例均为小规模手构造枚举，原因码可从拓扑直接读出：
+  pinwheel（链环度 3,3,2,2 → `non_manifold_edge`）、两个分离三角环
+  共边（→ `disconnected_link`）、四点共面邻接体（→ `zero_volume_star`）、
+  k 边形环 250/251（500 接受 / 502 拒绝）、边界边与显式保护面拒绝、
+  t=0/1/负数/float/坏字符串、端点 bool/越界/a==b；并有原子性测试
+  断言失败后网格在审计意义下完全不变。
+
 ## 已知限制（本题有限协议，不宣称行业标准兼容）
 
 - 坐标必须有理；不支持浮点网格、无理数或度量单位换算。
@@ -137,7 +236,14 @@ from orient_audit import (
   自相交、孔洞规范、网格标签/材料属性等更广义的网格质量问题。
 - 修复只做逐单元体积极性，不做全局一致性传播（例如彼此孤立、无法靠
   几何符号定向的零体积簇保持可报告但不可修复——这正是契约要求）。
-- 规模上限 500 个四面体（接口边界，非性能极限）。
+- 规模上限 500 个四面体（接口边界，非性能极限）；单次内部边分裂后
+  单元数同样不得超过 500（星内每体增加一个）。
+- 内部边分裂只接受“星为单个简单环”的内部边：不分裂边界边（边界默认
+  保护），不分裂非流形边 / 夹伤边；不提供沿边连续细分、面分裂、
+  2-3/3-2 翻转或全局网格质量优化（本轮迭代不在范围内）。
+- 材料标签是逐单元的不透明可哈希标注，分裂只做继承；不维护单元集
+  （material interface）的显式拓扑，显式保护面需由调用方自行给出。
+- 保护只按三点面键匹配；不识别“几何共面但顶点编号不同”的面。
 
 ## 目录
 
@@ -145,12 +251,15 @@ from orient_audit import (
 orient_audit/
   __init__.py   # 公开接口
   errors.py     # MeshInputError / DuplicateTetrahedraError / ZeroVolumeError
+                #   / EdgeSplitError / ProtectedFaceError
   exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
-  mesh.py       # TetMesh、无序三点面关联
+  mesh.py       # TetMesh（材料标签、保护面）、无序三点面关联
   audit.py      # audit / repair_orientation / AuditReport
+  split.py      # split_interior_edge / EdgeSplitResult（内部边分裂）
 tests/
-  fixtures.py   # 确定性立方体剖分数据
+  fixtures.py   # 确定性立方体剖分 + 重心剖分/环/非流形边等分裂夹具
   reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
-  test_audit.py # 必要测试
-demo.py         # 固定输入演示
+  test_audit.py # 审计与修复测试
+  test_split.py # 内部边分裂测试
+demo.py         # 固定输入演示（审计修复 + 内部边分裂）
 ```

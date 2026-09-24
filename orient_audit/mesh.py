@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .errors import DuplicateTetrahedraError, MeshInputError
 from .exact import MAX_TETS, TET_SIZE, parse_index, parse_vertex
@@ -30,6 +31,30 @@ FACE_LOCAL: tuple[tuple[int, int, int], ...] = (
 )
 
 Vertex = tuple[Fraction, Fraction, Fraction]
+#: 材料标签：任意可哈希值（默认 0）。分裂时子单元继承所属单元标签。
+TetLabel = Any
+#: 受保护面以无序三点键表示（排序后的顶点下标）。
+FaceKey = tuple[int, int, int]
+
+
+def _normalize_face_key(raw: Any, location: str, n_verts: int) -> FaceKey:
+    """校验单个保护面声明：恰好 3 个互不相同且不越界的 int 下标。
+
+    返回排序后的三点键。
+    """
+
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        raise MeshInputError("保护面必须是 3 个顶点下标的序列", location)
+    if len(raw) != 3:
+        raise MeshInputError(
+            f"保护面必须恰好含 3 个顶点下标，得到 {len(raw)} 个", location
+        )
+    idx = tuple(parse_index(x, f"{location}[{k}]", n_verts) for k, x in enumerate(raw))
+    if len(set(idx)) != 3:
+        raise MeshInputError(
+            f"保护面的 3 个顶点下标必须互不相同，得到 {list(idx)}", location
+        )
+    return tuple(sorted(idx))  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -39,22 +64,47 @@ class TetMesh:
     属性:
         vertices: ``tuple[Vertex, ...]``，坐标均为精确 :class:`Fraction`。
         tets: ``tuple[tuple[int, int, int, int], ...]``。
+        tet_labels: 每个四面体的材料标签元组；未指定时全为 0。
+                    内部边分裂产生的子单元继承原单元标签。
+        protected_faces: 显式声明的受保护面三点键元组（排序三点）。
+                         边界面默认始终受保护，无需在此重复声明；
+                         此处用于内部材料分界面等额外保护面。
     """
 
     vertices: tuple[Vertex, ...]
     tets: tuple[tuple[int, int, int, int], ...]
+    tet_labels: tuple[TetLabel, ...] = ()
+    protected_faces: tuple[FaceKey, ...] = ()
+
+    def __post_init__(self) -> None:
+        # 兼容旧的两字段位置构造 TetMesh(vertices, tets)：标签缺省补全为 0。
+        if len(self.tet_labels) != len(self.tets):
+            if self.tet_labels:
+                raise ValueError(
+                    "tet_labels 长度必须与 tets 一致（请用 TetMesh.build 构造）"
+                )
+            object.__setattr__(self, "tet_labels", tuple(0 for _ in self.tets))
 
     @classmethod
-    def build(cls, vertices, tets) -> "TetMesh":
+    def build(
+        cls,
+        vertices,
+        tets,
+        *,
+        tet_labels=None,
+        protected_faces=None,
+    ) -> "TetMesh":
         """从类序列输入构造网格，做完整结构校验。
 
-        校验顺序固定（先顶点后面），所有错误带 ``location``：
+        校验顺序固定（先顶点后面，最后附属数据），所有错误带 ``location``：
 
         1. 顶点数 / 坐标合法性（拒绝 bool、float、NaN/Infinity）；
         2. 单元数不超过 :data:`~orient_audit.exact.MAX_TETS`；
         3. 每个单元恰好 4 个下标，下标为 int（拒绝 bool）且不越界，
            单元内下标互不相同；
-        4. 无重复单元（四点集合相同即重复，与排列无关）。
+        4. 无重复单元（四点集合相同即重复，与排列无关）；
+        5. ``tet_labels``（若给）长度与单元数一致，每个标签可哈希；
+        6. ``protected_faces``（若给）每个为 3 个合法、互异下标，去重排序。
 
         任何一步失败都抛出 :class:`MeshInputError` 或其子类，
         不产生部分构造结果（本方法要么返回完整对象要么抛异常）。
@@ -104,14 +154,75 @@ class TetMesh:
         if dup:
             raise DuplicateTetrahedraError(dup)
 
-        return cls(parsed_verts, tuple(parsed_tets))
+        # ---- 材料标签 ----
+        n_tets = len(parsed_tets)
+        if tet_labels is None:
+            labels: tuple[TetLabel, ...] = tuple(0 for _ in parsed_tets)
+        else:
+            if isinstance(tet_labels, str) or not isinstance(
+                tet_labels, (list, tuple)
+            ):
+                raise MeshInputError(
+                    "tet_labels 必须是 list/tuple 且长度与单元数一致", "tet_labels"
+                )
+            if len(tet_labels) != n_tets:
+                raise MeshInputError(
+                    f"tet_labels 长度 {len(tet_labels)} 与单元数 {n_tets} 不一致",
+                    "tet_labels",
+                )
+            checked: list[TetLabel] = []
+            for li, label in enumerate(tet_labels):
+                try:
+                    hash(label)
+                except TypeError:
+                    raise MeshInputError(
+                        f"材料标签必须可哈希，得到 {type(label).__name__}",
+                        f"tet_labels[{li}]",
+                    )
+                checked.append(label)
+            labels = tuple(checked)
+
+        # ---- 显式保护面 ----
+        if protected_faces is None:
+            prot: tuple[FaceKey, ...] = ()
+        else:
+            if isinstance(protected_faces, str) or not isinstance(
+                protected_faces, (list, tuple)
+            ):
+                raise MeshInputError(
+                    "protected_faces 必须是 list/tuple 形式的三点面序列",
+                    "protected_faces",
+                )
+            keys: set[FaceKey] = set()
+            for fi, raw_face in enumerate(protected_faces):
+                keys.add(
+                    _normalize_face_key(raw_face, f"protected_faces[{fi}]", n_verts)
+                )
+            prot = tuple(sorted(keys))
+
+        return cls(parsed_verts, tuple(parsed_tets), labels, prot)
 
     def with_repaired_tets(
         self, new_tets: tuple[tuple[int, int, int, int], ...]
     ) -> "TetMesh":
-        """返回更换单元顺序后的新网格；顶点对象原样保留（修复不移动顶点）。"""
+        """返回更换单元顺序后的新网格；顶点对象原样保留（修复不移动顶点）。
 
-        return TetMesh(self.vertices, new_tets)
+        材料标签与保护面随单元位置原样保留（逐单元修复不增删单元）。
+        """
+
+        return TetMesh(
+            self.vertices, new_tets, self.tet_labels, self.protected_faces
+        )
+
+    def boundary_face_keys(self) -> frozenset[FaceKey]:
+        """当前网格全部边界面的无序三点键（只被一个单元引用的面）。"""
+
+        counts: dict[FaceKey, int] = {}
+        for tet in self.tets:
+            for local in FACE_LOCAL:
+                key = tuple(sorted((tet[local[0]], tet[local[1]], tet[local[2]])))
+                counts[key] = counts.get(key, 0) + 1  # type: ignore[index]
+        return frozenset(key for key, n in counts.items() if n == 1)
 
 
 @dataclass(frozen=True)
