@@ -2,9 +2,11 @@
 
 公开数据结构（见模块 docstring 与 README）：
 
-``TetMesh(vertices, tets)``
+``TetMesh(vertices, tets, materials, protected_faces)``
     不可变网格。``vertices`` 为三元组序列（内部存 :class:`Fraction`），
-    ``tets`` 为 4 个顶点下标组成的序列。
+    ``tets`` 为 4 个顶点下标组成的序列。``materials`` 为逐单元材料标签
+    （int 元组，默认全 0）；``protected_faces`` 为保护面的无序三点键
+    （排序元组，默认空），分裂类操作不得破坏这些面。
 
 ``FaceIncidence(key, occurrences)``
     面关联记录。``key`` 是排序后的三个顶点下标（无序三点键）；
@@ -39,22 +41,40 @@ class TetMesh:
     属性:
         vertices: ``tuple[Vertex, ...]``，坐标均为精确 :class:`Fraction`。
         tets: ``tuple[tuple[int, int, int, int], ...]``。
+        materials: 逐单元材料标签（int）；每个四面体一个，分裂时子单元
+            继承父单元标签。
+        protected_faces: 保护面的无序三点键（排序元组）集合；边分裂
+            不得触碰或破坏这些面。
     """
 
     vertices: tuple[Vertex, ...]
     tets: tuple[tuple[int, int, int, int], ...]
+    materials: tuple[int, ...] = ()
+    protected_faces: tuple[tuple[int, int, int], ...] = ()
 
     @classmethod
-    def build(cls, vertices, tets) -> "TetMesh":
+    def build(
+        cls,
+        vertices,
+        tets,
+        *,
+        materials=None,
+        protected_faces=None,
+    ) -> "TetMesh":
         """从类序列输入构造网格，做完整结构校验。
 
-        校验顺序固定（先顶点后面），所有错误带 ``location``：
+        校验顺序固定（先顶点后面，再标签与保护面），所有错误带
+        ``location``：
 
         1. 顶点数 / 坐标合法性（拒绝 bool、float、NaN/Infinity）；
         2. 单元数不超过 :data:`~orient_audit.exact.MAX_TETS`；
         3. 每个单元恰好 4 个下标，下标为 int（拒绝 bool）且不越界，
            单元内下标互不相同；
-        4. 无重复单元（四点集合相同即重复，与排列无关）。
+        4. 无重复单元（四点集合相同即重复，与排列无关）；
+        5. ``materials``（给出时）长度与单元数一致，每项为 int（拒绝
+           bool）；不给出时全部标签为 0；
+        6. ``protected_faces``（给出时）每个面为 3 个不重复的合法顶点
+           下标，重复给出同一面只保留一份。
 
         任何一步失败都抛出 :class:`MeshInputError` 或其子类，
         不产生部分构造结果（本方法要么返回完整对象要么抛异常）。
@@ -104,14 +124,85 @@ class TetMesh:
         if dup:
             raise DuplicateTetrahedraError(dup)
 
-        return cls(parsed_verts, tuple(parsed_tets))
+        # ---- 材料标签（可选，默认全 0）----
+        if materials is None:
+            parsed_materials = tuple(0 for _ in parsed_tets)
+        else:
+            if isinstance(materials, str) or not isinstance(
+                materials, (list, tuple)
+            ):
+                raise MeshInputError(
+                    "materials 必须是 list/tuple 形式的逐单元标签序列",
+                    "materials",
+                )
+            if len(materials) != len(parsed_tets):
+                raise MeshInputError(
+                    f"materials 长度 {len(materials)} 与单元数 "
+                    f"{len(parsed_tets)} 不一致",
+                    "materials",
+                )
+            labels: list[int] = []
+            for mi, raw_label in enumerate(materials):
+                loc = f"materials[{mi}]"
+                if isinstance(raw_label, bool) or not isinstance(raw_label, int):
+                    raise MeshInputError(
+                        f"材料标签必须是 int，得到 {type(raw_label).__name__}",
+                        loc,
+                    )
+                labels.append(raw_label)
+            parsed_materials = tuple(labels)
+
+        # ---- 保护面（可选，默认空；无序三点键，排序去重）----
+        if protected_faces is None:
+            protected: tuple[tuple[int, int, int], ...] = ()
+        else:
+            if isinstance(protected_faces, str) or not isinstance(
+                protected_faces, (list, tuple, set, frozenset)
+            ):
+                raise MeshInputError(
+                    "protected_faces 必须是面序列，每个面为 3 个顶点下标",
+                    "protected_faces",
+                )
+            face_keys: set[tuple[int, int, int]] = set()
+            for fi, raw_face in enumerate(protected_faces):
+                loc = f"protected_faces[{fi}]"
+                if isinstance(raw_face, str) or not isinstance(
+                    raw_face, (list, tuple)
+                ):
+                    raise MeshInputError(
+                        "保护面必须是 3 个顶点下标的序列", loc
+                    )
+                if len(raw_face) != 3:
+                    raise MeshInputError(
+                        f"保护面必须恰好含 3 个顶点下标，得到 {len(raw_face)} 个",
+                        loc,
+                    )
+                idxs = tuple(
+                    parse_index(x, f"{loc}[{k}]", n_verts)
+                    for k, x in enumerate(raw_face)
+                )
+                if len(set(idxs)) != 3:
+                    raise MeshInputError(
+                        f"保护面的 3 个顶点下标必须互不相同，得到 {list(idxs)}",
+                        loc,
+                    )
+                face_keys.add(tuple(sorted(idxs)))  # type: ignore[arg-type]
+            protected = tuple(sorted(face_keys))
+
+        return cls(parsed_verts, tuple(parsed_tets), parsed_materials, protected)
 
     def with_repaired_tets(
         self, new_tets: tuple[tuple[int, int, int, int], ...]
     ) -> "TetMesh":
-        """返回更换单元顺序后的新网格；顶点对象原样保留（修复不移动顶点）。"""
+        """返回更换单元顺序后的新网格；顶点、标签与保护面原样保留
+        （修复不移动顶点，也不改材料）。"""
 
-        return TetMesh(self.vertices, new_tets)
+        return TetMesh(
+            self.vertices,
+            new_tets,
+            self.materials,
+            self.protected_faces,
+        )
 
 
 @dataclass(frozen=True)

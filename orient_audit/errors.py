@@ -45,6 +45,39 @@ class DuplicateTetrahedraError(MeshInputError):
         super().__init__("\n".join(lines))
 
 
+class EdgeSplitError(ValueError):
+    """内部边分裂被拒绝或分裂后校验失败。
+
+    属性:
+        reason: 机器可读的原因串，取值为
+
+            - ``"edge_not_found"``：网格中不存在该边；
+            - ``"edge_on_boundary"``：边关联边界面（不是内部边）；
+            - ``"edge_on_protected_face"``：边触碰保护面；
+            - ``"non_manifold_edge"``：星内某侧面被引用次数 != 2；
+            - ``"ring_disconnected"``：星形邻接环不连通（非单一闭环）；
+            - ``"zero_volume_star"``：星内存在零体积单元；
+            - ``"point_collides"``：插入点与现有顶点重合；
+            - ``"verification_failed"``：分裂后自检（体积/朝向/邻接/
+              边界/保护面守恒）未通过。
+
+        edge: 引发拒绝的边 ``(a, b)``（按调用方给定顺序）。
+        faces: 与原因相关的面键（仅 ``edge_on_protected_face`` 时给出）。
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        message: str,
+        edge: tuple[int, int] | None = None,
+        faces: tuple[tuple[int, int, int], ...] = (),
+    ) -> None:
+        self.reason = reason
+        self.edge = edge
+        self.faces = tuple(faces)
+        super().__init__(f"[{reason}] {message}")
+
+
 class ZeroVolumeError(ValueError):
     """要求修复方向时存在零体积（共面 / 退化）四面体，按契约拒绝修复。
 
