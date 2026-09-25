@@ -85,3 +85,23 @@ def ref_outward(verts, tet, ordered_face) -> bool:
     tet_c = tuple(sum(pt[k] for pt in pts) / 4 for k in range(3))
     outward = tuple(face_c[k] - tet_c[k] for k in range(3))
     return sum(normal[k] * outward[k] for k in range(3)) > 0
+
+
+def ref_barycentric(verts, tet, point):
+    """点相对四面体的重心坐标，Cramer 法则精确求解（独立于被测核心）。
+
+    返回 4 个 Fraction；退化单元返回 None。坐标全部落在 [0,1]
+    即表示点（含边界）在单元内。
+    """
+
+    p = [_as_vec(verts[t]) for t in tet]
+    x = _as_vec(point)
+    cols = [tuple(p[i][k] - p[0][k] for k in range(3)) for i in (1, 2, 3)]
+    rhs = tuple(x[k] - p[0][k] for k in range(3))
+    d = _det3(cols[0], cols[1], cols[2])
+    if d == 0:
+        return None
+    l1 = _det3(rhs, cols[1], cols[2]) / d
+    l2 = _det3(cols[0], rhs, cols[2]) / d
+    l3 = _det3(cols[0], cols[1], rhs) / d
+    return (1 - l1 - l2 - l3, l1, l2, l3)

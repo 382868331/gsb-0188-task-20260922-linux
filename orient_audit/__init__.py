@@ -5,8 +5,11 @@
 - :class:`TetMesh` -- 已校验的不可变四面体网格（``TetMesh.build`` 构造）；
 - :func:`audit` -- 定向与边界审计，返回 :class:`AuditReport`；
 - :func:`repair_orientation` -- 修复负体积单元定向（只交换最后两顶点）；
+- :func:`section` -- 有理平面截面，返回 :class:`SectionReport`；
 - 报告类型：:class:`AuditReport`、:class:`BoundaryFace`、
-  :class:`InteriorFace`、:class:`NonManifoldFace`；
+  :class:`InteriorFace`、:class:`NonManifoldFace`、
+  :class:`SectionReport`、:class:`SectionPatch`、:class:`SectionPoint`、
+  :class:`PointContact`、:class:`EdgeContact`；
 - 异常：:class:`MeshInputError`、:class:`DuplicateTetrahedraError`、
   :class:`ZeroVolumeError`；
 - 接口常量：:data:`MAX_TETS`（500）。
@@ -29,6 +32,14 @@ from .errors import (
 )
 from .exact import MAX_TETS
 from .mesh import FaceIncidence, FaceOccurrence, TetMesh
+from .section import (
+    EdgeContact,
+    PointContact,
+    SectionPatch,
+    SectionPoint,
+    SectionReport,
+    section,
+)
 
 __all__ = [
     "TetMesh",
@@ -36,10 +47,16 @@ __all__ = [
     "FaceOccurrence",
     "audit",
     "repair_orientation",
+    "section",
     "AuditReport",
     "BoundaryFace",
     "InteriorFace",
     "NonManifoldFace",
+    "SectionReport",
+    "SectionPatch",
+    "SectionPoint",
+    "PointContact",
+    "EdgeContact",
     "MeshInputError",
     "DuplicateTetrahedraError",
     "ZeroVolumeError",

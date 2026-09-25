@@ -13,6 +13,9 @@ B. 实际触发的边界：三单元共享一个面 -> 报告非流形位置；
    加入共面退化单元 -> repair_orientation 抛 ZeroVolumeError 拒绝修复；
    重复单元 -> TetMesh.build 抛 DuplicateTetrahedraError。
 
+C. 平面截面（新增）：有理平面 × 四面体网格 -> 有理多边形片。
+   共享棱交点身份核对、解析棱锥面积核对、共面面去重、零面积接触。
+
 运行：python demo.py
 """
 
@@ -28,6 +31,7 @@ from orient_audit import (
     ZeroVolumeError,
     audit,
     repair_orientation,
+    section,
 )
 
 # ---------------------------------------------------------------- 固定数据
@@ -172,10 +176,68 @@ def main() -> None:
         except MeshInputError as exc:
             print(f"  {label} -> {type(exc).__name__} 于 {exc.location}: 已拒绝")
 
+    # ============ C. 平面截面：有理平面 × 四面体网格 ============
+    print()
+    print("=" * 68)
+    print("C. 平面截面：有理多边形片 / 点身份 / 解析面积核对")
+    print("=" * 68)
+
+    # 两个共享面 (0,1,2) 的四面体（顶点 3 在 z>0，顶点 4 在 z<0）。
+    two_verts = (
+        (0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0, -1),
+    )
+    two_mesh = TetMesh.build(two_verts, [(0, 1, 2, 3), (0, 2, 1, 4)])
+
+    # C1. 平面 x = 1/3 截两个单元：共享棱交点身份必须一致（原顶点对）。
+    print("[C1] 两个共享面的四面体 × 平面 x = 1/3：")
+    rep1 = section(two_mesh, (1, 0, 0), Fraction(1, 3))
+    for p in rep1.patches:
+        print(f"  片 kind={p.kind} 来源单元={list(p.source_tets)} "
+              f"多边形={list(p.polygon)} 精确面积平方={p.area2}")
+    shared = set(rep1.patches[0].polygon) & set(rep1.patches[1].polygon)
+    print(f"  两片共享的全局交点 ID: {sorted(shared)}，身份: "
+          f"{sorted(rep1.points[i].origin for i in shared)}")
+    assert all(r == 0 for r in rep1.plane_residuals())
+    print("  全部截面点精确满足平面方程（残差均为 0）。")
+
+    # C2. 解析棱锥核对：z = 1/2 截方底棱锥，截面是边长 1 的正方形。
+    print("[C2] 方底棱锥 × 平面 z = 1/2（解析截面面积 = 1）：")
+    pyr_mesh = TetMesh.build(
+        [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0), (0, 0, 1)],
+        [(0, 1, 2, 4), (0, 2, 3, 4)],
+    )
+    rep2 = section(pyr_mesh, (0, 0, 1), Fraction(1, 2))
+    print(f"  面片数: {len(rep2.patches)}，"
+          f"各片精确面积平方: {[str(p.area2) for p in rep2.patches]}")
+    print(f"  截面总面积（浮点便利出口）: {rep2.total_area()}")
+    assert all(p.area2 == Fraction(1, 4) for p in rep2.patches)
+    assert rep2.total_area() == 1.0
+    print("  与解析值 1 一致（每片精确面积平方 = 1/4）。")
+
+    # C3. 平面与共享面重合：完全共面的原面只保留一份。
+    print("[C3] 平面 z = 0 与共享面重合：")
+    rep3 = section(two_mesh, (0, 0, 1), 0)
+    cop = rep3.patches[0]
+    print(f"  面片数: {len(rep3.patches)}（去重后仅一份），"
+          f"kind={cop.kind}，来源单元={list(cop.source_tets)}")
+    assert len(rep3.patches) == 1 and cop.source_tets == (0, 1)
+
+    # C4. 零面积接触：平面 x = 1 只在顶点 1 处碰到两个单元。
+    print("[C4] 平面 x = 1 仅触顶点（零面积结果单独列出）：")
+    rep4 = section(two_mesh, (1, 0, 0), 1)
+    print(f"  面片数: {len(rep4.patches)}，"
+          f"点接触: {[(c.vertex, list(c.source_tets)) for c in rep4.point_contacts]}")
+    assert rep4.patches == () and len(rep4.point_contacts) == 1
+
+    # C5. 非法平面参数实际触发拒绝。
+    print("[C5] 非法平面参数：")
+    try:
+        section(two_mesh, (0, 0, 0), 0)
+    except MeshInputError as exc:
+        print(f"  零法向 -> {type(exc).__name__} 于 {exc.location}: 已拒绝")
+
     elapsed = time.perf_counter() - t0
     print()
     print(f"演示完成，实际耗时 {elapsed:.3f} 秒。")
-
-
 if __name__ == "__main__":
     main()
