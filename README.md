@@ -2,7 +2,7 @@
 
 离线、纯标准库的可复用题库：输入有理坐标顶点与最多 500 个四面体，
 精确判定并修复单元定向，建立面关联，报告边界面、非流形、连通分量、
-总有向体积与缺陷位置。
+总有向体积与缺陷位置；并提供线段穿越采样与积分入口（逐顶点标量场）。
 
 - **Python 版本**：CPython 3.14.7（仅用到 3.10+ 即有的语法特性）。
 - **依赖**：无第三方依赖，只用标准库（`fractions`、`dataclasses`、
@@ -18,6 +18,18 @@ python -m unittest discover -s tests -v
 
 # 固定输入演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep/预录）
 python demo.py
+
+# 本轮新增：线段穿越采样与积分演示（约 0.01 秒，预算 90 秒）
+python demo_iteration.py
+```
+
+## venv 准备
+
+无第三方依赖，venv 可选。如需隔离环境：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # 之后直接用 python 即可，无需 pip install
 ```
 
 ## 公开接口与数据结构
@@ -25,8 +37,11 @@ python demo.py
 ```python
 from orient_audit import (
     TetMesh, audit, repair_orientation,      # 核心入口
+    traverse_segment,                        # 线段穿越采样与积分
+    SegmentTraversal, SegmentPiece, SegmentGap,
     AuditReport, BoundaryFace, InteriorFace, NonManifoldFace,  # 结果类型
     MeshInputError, DuplicateTetrahedraError, ZeroVolumeError, # 异常
+    InvalidTraversalMeshError,               # 穿越对无效网格的拒绝
     MAX_TETS,                                # 500
 )
 ```
@@ -74,6 +89,34 @@ from orient_audit import (
   （`tet_indices` 列出全部），不返回部分修改，原网格保持不变；
 - **修复不移动顶点**：返回新网格，顶点坐标对象恒等保留（有断言守护）；
 - 非流形/定向冲突属于拓扑状态，由 `audit` 报告，不阻止逐单元定向修复。
+
+## 线段穿越采样与积分：`traverse_segment(mesh, values, start, end)`
+
+调用方为**每个顶点**给一个标量（int / Fraction / 有理字符串，长度必须
+等于顶点数），`start`/`end` 为线段两端点（各 3 个有理坐标，拒绝
+float）。线段参数化为 `P(t) = start + t·(end - start)`，`t ∈ [0, 1]`。
+返回 `SegmentTraversal`：
+
+| 字段 | 含义 |
+|---|---|
+| `pieces` | 有序 `SegmentPiece(tet_index, t0, t1, value0, value1, integral)`：依次落入的单元、参数区间、两端点重心插值场值、段积分 |
+| `gaps` | 有序 `SegmentGap(t0, t1)`：网格外间隙，**单独列出，不补 0 混入结果** |
+| `total_integral` | 各段积分之和（精确 `Fraction`；对参数 t 积分，场在单元内线性故梯形精确） |
+| `tet_sequence` | 依次穿过的单元下标（属性） |
+
+语义约定：
+
+- **邻接行走**：跨面时经面关联邻接表直接进入相邻单元，不每步重扫全网格；
+  仅起点定位、离网后再进入、恰过共享棱/顶点的退化事件才做一次定位扫描。
+- **确定去重**：线恰过共享棱/顶点出现多个候选下一单元时取**最小单元下标**；
+  仅相切（零长度区间）的单元被丢弃，同一长度不会计两次。
+- **沿边界走的归属**：线段与公共面/棱重合的区间固定归属下标最小的候选
+  单元，每个参数值恰属于一个分段。
+- **无效网格拒绝**：存在负体积、零体积单元、非流形面或定向冲突内面时抛
+  `InvalidTraversalMeshError`（异常携带全部缺陷位置），不输出看似完整的
+  穿越序列；负定向单元仍按原审计规则先 `repair_orientation` 再调用。
+- 全部几何判定、插值与积分在 `Fraction` 上精确完成；唯一浮点出口是
+  `total_integral_float()`（一次正确舍入，误差 ≤ 0.5 ULP）。
 
 ## 面关联语义（无序三点键）
 
@@ -128,6 +171,12 @@ from orient_audit import (
 - 已覆盖：翻转单元修复、重复体（含排列重复）、共面退化拒绝、
   三单元共面的非流形、共享面同向冲突、多个连通分量、500 上限边界、
   bool/float/NaN/Infinity/越界等非法输入定位。
+- **线段穿越独立核对**：仿射场总积分对解析原函数积分（
+  `reference.ref_affine_integral`，不经过网格结构）；区间并集对独立
+  逐四面体裁线（`reference.ref_clip_segment`，叉积外法向 Cyrus–Beck，
+  与被测核心的顶点替换行列式是不同代数路径）。已覆盖：恰过共享顶点
+  的对角线（间隙 + 去重）、沿共享棱走的归属、离网再进入、相切零长度、
+  负/零体积/非流形网格拒绝、非法 values 与端点定位。
 
 ## 已知限制（本题有限协议，不宣称行业标准兼容）
 
@@ -148,9 +197,12 @@ orient_audit/
   exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
   mesh.py       # TetMesh、无序三点面关联
   audit.py      # audit / repair_orientation / AuditReport
+  traverse.py   # traverse_segment：线段穿越采样与积分（邻接行走）
 tests/
   fixtures.py   # 确定性立方体剖分数据
   reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
+  test_traverse.py # 线段穿越测试（仿射解析积分 + 独立裁线对照）
   test_audit.py # 必要测试
 demo.py         # 固定输入演示
+demo_iteration.py # 本轮新增：线段穿越演示
 ```

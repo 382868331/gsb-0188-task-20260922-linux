@@ -61,3 +61,37 @@ class ZeroVolumeError(ValueError):
         super().__init__(
             f"{detail} 体积精确为零，无法通过交换顶点修复，已拒绝（顶点未被移动）"
         )
+
+
+class InvalidTraversalMeshError(ValueError):
+    """线段穿越要求网格正体积、流形且定向一致，否则拒绝并给出全部缺陷位置。
+
+    属性:
+        negative_tets / zero_tets: 负体积 / 零体积单元下标。
+        non_manifold_keys: 非流形面的无序三点键。
+        inconsistent_keys: 定向冲突内面的无序三点键。
+    """
+
+    def __init__(
+        self,
+        negative: tuple[int, ...] = (),
+        zero: tuple[int, ...] = (),
+        non_manifold: tuple[tuple[int, int, int], ...] = (),
+        inconsistent: tuple[tuple[int, int, int], ...] = (),
+    ) -> None:
+        self.negative_tets = tuple(negative)
+        self.zero_tets = tuple(zero)
+        self.non_manifold_keys = tuple(non_manifold)
+        self.inconsistent_keys = tuple(inconsistent)
+        parts = []
+        if self.negative_tets:
+            parts.append(f"负体积单元 {list(self.negative_tets)}（请先 repair_orientation）")
+        if self.zero_tets:
+            parts.append(f"零体积单元 {list(self.zero_tets)}")
+        if self.non_manifold_keys:
+            parts.append(f"非流形面 {list(self.non_manifold_keys)}")
+        if self.inconsistent_keys:
+            parts.append(f"定向冲突内面 {list(self.inconsistent_keys)}")
+        super().__init__(
+            "网格不满足线段穿越条件，已拒绝（不输出部分穿越序列）: " + "; ".join(parts)
+        )

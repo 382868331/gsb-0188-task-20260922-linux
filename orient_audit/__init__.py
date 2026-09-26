@@ -7,8 +7,10 @@
 - :func:`repair_orientation` -- 修复负体积单元定向（只交换最后两顶点）；
 - 报告类型：:class:`AuditReport`、:class:`BoundaryFace`、
   :class:`InteriorFace`、:class:`NonManifoldFace`；
+- 线段穿越：:func:`traverse_segment` 及结果类型 :class:`SegmentTraversal`、
+  :class:`SegmentPiece`、:class:`SegmentGap`；
 - 异常：:class:`MeshInputError`、:class:`DuplicateTetrahedraError`、
-  :class:`ZeroVolumeError`；
+  :class:`ZeroVolumeError`、:class:`InvalidTraversalMeshError`；
 - 接口常量：:data:`MAX_TETS`（500）。
 """
 
@@ -24,11 +26,18 @@ from .audit import (
 )
 from .errors import (
     DuplicateTetrahedraError,
+    InvalidTraversalMeshError,
     MeshInputError,
     ZeroVolumeError,
 )
 from .exact import MAX_TETS
 from .mesh import FaceIncidence, FaceOccurrence, TetMesh
+from .traverse import (
+    SegmentGap,
+    SegmentPiece,
+    SegmentTraversal,
+    traverse_segment,
+)
 
 __all__ = [
     "TetMesh",
@@ -43,5 +52,10 @@ __all__ = [
     "MeshInputError",
     "DuplicateTetrahedraError",
     "ZeroVolumeError",
+    "InvalidTraversalMeshError",
+    "traverse_segment",
+    "SegmentTraversal",
+    "SegmentPiece",
+    "SegmentGap",
     "MAX_TETS",
 ]
