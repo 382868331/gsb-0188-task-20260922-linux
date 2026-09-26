@@ -4,6 +4,11 @@
 精确判定并修复单元定向，建立面关联，报告边界面、非流形、连通分量、
 总有向体积与缺陷位置。
 
+增量能力（守恒重映射）：输入覆盖同一区域的两张四面体网格与源单元
+常量密度，用半空间裁剪求源-目标四面体的真实交叠体积（精确有理数），
+把单元平均量守恒地转到目标网格，输出稀疏传递权重、未覆盖体积与
+总量误差。详见「守恒重映射 remap」一节。
+
 - **Python 版本**：CPython 3.14.7（仅用到 3.10+ 即有的语法特性）。
 - **依赖**：无第三方依赖，只用标准库（`fractions`、`dataclasses`、
   `unittest` 等）。装好 Python 后无需安装任何其他东西。
@@ -13,11 +18,18 @@
 ## 准确命令
 
 ```bash
+# 建议先建隔离环境（不装任何第三方包，仅用标准库）
+python -m venv .venv
+. .venv/bin/activate
+
 # 必要测试（在仓库根目录执行）
 python -m unittest discover -s tests -v
 
 # 固定输入演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep/预录）
 python demo.py
+
+# 守恒重映射真实离线演示（约 1.5 秒，远小于 90 秒预算）
+python demo_iteration.py
 ```
 
 ## 公开接口与数据结构
@@ -139,6 +151,42 @@ from orient_audit import (
   几何符号定向的零体积簇保持可报告但不可修复——这正是契约要求）。
 - 规模上限 500 个四面体（接口边界，非性能极限）。
 
+## 守恒重映射 remap
+
+把源网格上的单元常量密度守恒地转到另一张覆盖同一区域的目标网格。
+权重来自源-目标四面体对的真实交叠体积（不是“目标中心落在哪个源
+单元”）：对每个候选四面体对，用目标四面体的四个面半空间精确裁剪
+源四面体（凸多面体裁剪，全程 fractions.Fraction），得到交叠凸多面体
+并精确求体积；包围盒预过滤跳过不相交的对。
+
+```python
+from fractions import Fraction
+from orient_audit import TetMesh, remap
+
+source = TetMesh.build(src_vertices, src_tets)   # 复用同一套校验
+target = TetMesh.build(tgt_vertices, tgt_tets)
+rep = remap(source, [Fraction(7, 3)] * len(source.tets), target)
+
+rep.weights            # 稀疏传递权重 (目标下标, 源下标, 交叠体积)，仅正体积项
+rep.target_averages    # 每个目标单元覆盖部分的平均密度（完全未覆盖为 None）
+rep.uncovered_volumes  # 每个目标单元的未覆盖体积（缺口保留，不归一）
+rep.mass_error         # 目标总质量 - 源被覆盖部分质量（守恒时精确为 0）
+```
+
+语义要点：
+
+- **守恒口径**：目标总质量 == 源网格被目标覆盖部分的质量，精确有理
+  运算下 mass_error 应为 0；源网格总质量 source_mass 单独报告。
+- **缺口不归一**：目标未被源完全覆盖时，缺口计入 uncovered_volumes，
+  target_averages 是覆盖部分的平均（target_masses / covered_volumes），
+  不做任何归一化到满覆盖。
+- **只读**：两个输入网格对象不被修改（TetMesh 本身不可变）。
+- **适用范围**：仅四面体（凸）单元，不实现一般非凸单元；坐标限定
+  有理数（int / Fraction / 有理字符串，拒绝 float 与 bool）；
+  零体积退化单元无法定义单元平均量，remap 直接报错。
+- 底层原语 tet_tet_intersection_volume(va, ta, vb, tb) 可单独导入，
+  返回两个四面体交叠体积的精确 Fraction。
+
 ## 目录
 
 ```
@@ -148,9 +196,12 @@ orient_audit/
   exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
   mesh.py       # TetMesh、无序三点面关联
   audit.py      # audit / repair_orientation / AuditReport
+  remap.py      # remap / tet_tet_intersection_volume / RemapReport
 tests/
   fixtures.py   # 确定性立方体剖分数据
   reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
-  test_audit.py # 必要测试
+  test_audit.py # 基线必要测试
+  test_remap.py # 守恒重映射手算核验测试
 demo.py         # 固定输入演示
+demo_iteration.py # 守恒重映射真实离线演示
 ```

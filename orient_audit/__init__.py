@@ -29,6 +29,7 @@ from .errors import (
 )
 from .exact import MAX_TETS
 from .mesh import FaceIncidence, FaceOccurrence, TetMesh
+from .remap import RemapReport, remap, tet_tet_intersection_volume
 
 __all__ = [
     "TetMesh",
@@ -36,6 +37,9 @@ __all__ = [
     "FaceOccurrence",
     "audit",
     "repair_orientation",
+    "remap",
+    "tet_tet_intersection_volume",
+    "RemapReport",
     "AuditReport",
     "BoundaryFace",
     "InteriorFace",
