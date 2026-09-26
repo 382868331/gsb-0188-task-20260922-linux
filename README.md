@@ -4,20 +4,37 @@
 精确判定并修复单元定向，建立面关联，报告边界面、非流形、连通分量、
 总有向体积与缺陷位置。
 
+增量能力（守恒重映射）：输入两张覆盖（部分）同一区域的四面体网格与
+源单元常量密度，用半空间交精确计算每对源/目标四面体的真实交叠体积，
+输出稀疏传递权重、每个目标单元的平均密度、未覆盖体积（缺口保留，
+不归一）与总量守恒误差。
+
 - **Python 版本**：CPython 3.14.7（仅用到 3.10+ 即有的语法特性）。
 - **依赖**：无第三方依赖，只用标准库（`fractions`、`dataclasses`、
   `unittest` 等）。装好 Python 后无需安装任何其他东西。
 - **离线**：核心、测试、演示全部离线运行，不访问网络、文件、数据库、
   云 API 或任何中间件；示例数据由仓库内确定性代码直接给出。
 
+## 环境准备（隔离 venv）
+
+```bash
+python3.14 -m venv .venv          # 隔离环境；仅用标准库，无需 pip install
+source .venv/bin/activate
+python --version                   # 应为 3.14.7
+```
+
 ## 准确命令
 
 ```bash
-# 必要测试（在仓库根目录执行）
+# 必要测试（在仓库根目录执行；基线回归 + 重映射新测试）
 python -m unittest discover -s tests -v
 
-# 固定输入演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep/预录）
+# 基线演示：定向审计与修复（约 0.05 秒）
 python demo.py
+
+# 增量演示：两张网格间的守恒重映射（约 0.3 秒，远小于 90 秒预算；
+# 真实离线计算，无账号/密钥/sleep/预录结果）
+python demo_iteration.py
 ```
 
 ## 公开接口与数据结构
@@ -28,6 +45,9 @@ from orient_audit import (
     AuditReport, BoundaryFace, InteriorFace, NonManifoldFace,  # 结果类型
     MeshInputError, DuplicateTetrahedraError, ZeroVolumeError, # 异常
     MAX_TETS,                                # 500
+    # 守恒重映射（增量）
+    remap, RemapResult, TransferWeight,
+    intersection_volume, tet_volume,
 )
 ```
 
@@ -74,6 +94,28 @@ from orient_audit import (
   （`tet_indices` 列出全部），不返回部分修改，原网格保持不变；
 - **修复不移动顶点**：返回新网格，顶点坐标对象恒等保留（有断言守护）；
 - 非流形/定向冲突属于拓扑状态，由 `audit` 报告，不阻止逐单元定向修复。
+
+## 守恒重映射：`remap(source, target, source_density) -> RemapResult`
+
+- **输入**：两个已校验的 :class:`TetMesh`（只读，不被修改；仅凸四面体
+  单元，任一网格含零体积单元会带定位报错）与逐源单元常量密度
+  （有理数序列，拒绝 float/bool，长度必须等于源单元数）。
+- **交叠体积**：对每对源/目标四面体取共 8 个外法向半空间，枚举平面
+  三元组求交点、保留落在全部半空间内的点作为凸交体顶点，再对每张
+  平面上的顶点按外法向排序、扇形三角化，用散度定理公式
+  ``V = (1/6)·Σ det(p,q,r)`` 精确求和。同平面异侧的半空间不视为重复；
+  退化交集自然得到 0。全部为 Fraction 精确运算，无容差。
+- **输出**（`RemapResult`，全部精确 Fraction）：
+  - `weights`：稀疏传递权重 `TransferWeight(source_index, target_index,
+    volume)`，只存交叠体积 > 0 的项；
+  - `target_mass` / `target_average_density`：每个目标单元的质量与
+    平均密度，平均按**整个**目标单元体积计算（未覆盖部分按 0 贡献）；
+  - `target_covered_volume` / `target_uncovered_volume`：覆盖与缺口
+    体积，目标未被源完全覆盖时缺口原样保留，**不归一到满覆盖**；
+  - `total_target_mass`、`covered_source_mass`（按源侧独立汇总）、
+    `mass_error`（两者之差，精确算术中恒为 0，作守恒核验）。
+- **不是**形心采样：权重来自真实交叠体积，目标中心落在哪个源单元
+  与结果无关。
 
 ## 面关联语义（无序三点键）
 
@@ -125,6 +167,10 @@ from orient_audit import (
 - **体积独立核对**：测试参考实现用 4×4 齐次坐标行列式 + Bareiss 无分数
   消元（`tests/reference.py`，不 import 本库），与核心的 3×3 余子式
   展开是两条独立算法路径；并独立用叉积法向·(面心−体形心) 检查边界面朝外。
+- 重映射核验：同一立方体 5 剖分 -> 6 剖分的常量场精确保持；
+  跨界分段常量（左半密度 1、右半密度 3）总质量手算 = 1 精确吻合，
+  单个跨界四面体的左右体积 7/96 与 1/96 为手算值；目标超出源区域时
+  缺口精确等于上半单位立方体体积 1，且总质量不被放大。
 - 已覆盖：翻转单元修复、重复体（含排列重复）、共面退化拒绝、
   三单元共面的非流形、共享面同向冲突、多个连通分量、500 上限边界、
   bool/float/NaN/Infinity/越界等非法输入定位。
@@ -138,6 +184,9 @@ from orient_audit import (
 - 修复只做逐单元体积极性，不做全局一致性传播（例如彼此孤立、无法靠
   几何符号定向的零体积簇保持可报告但不可修复——这正是契约要求）。
 - 规模上限 500 个四面体（接口边界，非性能极限）。
+- 重映射只支持凸四面体单元的真实交叠；不实现一般非凸单元、
+  高阶场或网格随时间运动。两网格不必覆盖同一区域，未覆盖部分
+  以缺口形式报告。
 
 ## 目录
 
@@ -148,9 +197,12 @@ orient_audit/
   exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
   mesh.py       # TetMesh、无序三点面关联
   audit.py      # audit / repair_orientation / AuditReport
+  remap.py      # 守恒重映射：半空间交叠体积、稀疏权重、缺口与守恒误差
 tests/
   fixtures.py   # 确定性立方体剖分数据
   reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
-  test_audit.py # 必要测试
-demo.py         # 固定输入演示
+  test_audit.py # 基线回归测试
+  test_remap.py # 重映射测试（手算核对、守恒、缺口、非法输入）
+demo.py         # 基线固定输入演示
+demo_iteration.py  # 重映射固定输入演示
 ```

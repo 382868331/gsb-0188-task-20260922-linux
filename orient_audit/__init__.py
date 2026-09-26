@@ -45,3 +45,19 @@ __all__ = [
     "ZeroVolumeError",
     "MAX_TETS",
 ]
+
+from .remap import (
+    RemapResult,
+    TransferWeight,
+    intersection_volume,
+    remap,
+    tet_volume,
+)
+
+__all__ += [
+    "remap",
+    "intersection_volume",
+    "tet_volume",
+    "TransferWeight",
+    "RemapResult",
+]
