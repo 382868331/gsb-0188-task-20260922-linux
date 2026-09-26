@@ -61,3 +61,22 @@ class ZeroVolumeError(ValueError):
         super().__init__(
             f"{detail} 体积精确为零，无法通过交换顶点修复，已拒绝（顶点未被移动）"
         )
+
+
+class TraversalError(ValueError):
+    """网格不满足线段穿越采样的前置条件，拒绝输出穿越序列。
+
+    线段穿越依赖逐单元跨面行走，要求网格几何上可行走：无零体积单元、
+    无负定向单元（需先 repair_orientation 修复）、无非流形面。
+    无效网格直接拒绝，不输出看起来完整实则不可信的穿越序列。
+
+    属性:
+        problems: 问题描述字符串元组（可定位，如负向/零体积单元下标、
+                  非流形面的顶点键）。
+    """
+
+    def __init__(self, problems: tuple[str, ...]) -> None:
+        self.problems = tuple(problems)
+        lines = ["网格不满足线段穿越条件，已拒绝（不产生穿越序列）:"]
+        lines.extend(f"  {p}" for p in self.problems)
+        super().__init__("\n".join(lines))

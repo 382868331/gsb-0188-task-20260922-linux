@@ -2,7 +2,9 @@
 
 离线、纯标准库的可复用题库：输入有理坐标顶点与最多 500 个四面体，
 精确判定并修复单元定向，建立面关联，报告边界面、非流形、连通分量、
-总有向体积与缺陷位置。
+总有向体积与缺陷位置。第二轮新增：给定每顶点标量场，沿线段精确
+采样与积分——返回线段依次落入的四面体、各段参数区间、线性插值
+端点值与总积分，网格外间隙单独列出。
 
 - **Python 版本**：CPython 3.14.7（仅用到 3.10+ 即有的语法特性）。
 - **依赖**：无第三方依赖，只用标准库（`fractions`、`dataclasses`、
@@ -12,12 +14,18 @@
 
 ## 准确命令
 
+# venv 准备（可选；本库无第三方依赖，venv 仅为隔离解释器）
+python3.14 -m venv .venv && . .venv/bin/activate
+
 ```bash
 # 必要测试（在仓库根目录执行）
 python -m unittest discover -s tests -v
 
 # 固定输入演示（约 0.05 秒，远小于 8 秒预算；真实计算，无 sleep/预录）
 python demo.py
+
+# 第二轮演示：线段穿越采样与积分（真实计算，远小于 90 秒预算）
+python demo_iteration.py
 ```
 
 ## 公开接口与数据结构
@@ -25,8 +33,11 @@ python demo.py
 ```python
 from orient_audit import (
     TetMesh, audit, repair_orientation,      # 核心入口
+    sample_segment,                          # 线段穿越采样与积分
     AuditReport, BoundaryFace, InteriorFace, NonManifoldFace,  # 结果类型
+    SegmentTraversal, SegmentHit, SegmentGap,                  # 穿越结果类型
     MeshInputError, DuplicateTetrahedraError, ZeroVolumeError, # 异常
+    TraversalError,                          # 网格不可行走
     MAX_TETS,                                # 500
 )
 ```
@@ -91,6 +102,53 @@ from orient_audit import (
 
 ## 浮点结果误差口径
 
+## 线段穿越采样与积分（sample_segment）
+
+```python
+tr = sample_segment(mesh, values, start, end)
+```
+
+- `values`：每顶点一个标量（int / Fraction / 有理字符串；拒绝 float/bool，
+  长度必须等于顶点数，错误带定位如 `values[2]`）。
+- `start` / `end`：线段端点，各 3 个有理坐标；参数 `t=0` 在 start、
+  `t=1` 在 end。两端点重合抛 `MeshInputError`。
+- 返回 `SegmentTraversal`：
+  - `hits`：`SegmentHit(tet_index, t0, t1, value0, value1)` 按 t 升序、
+    互不重叠；`value0/value1` 为分段线性场在段端点的精确插值，
+    `hit.integral` 为该段积分（线性场梯形公式即精确值）；
+  - `gaps`：`SegmentGap(t0, t1)` 网格外区间，单独列出，**不自动补 0
+    混进结果**；`hits` 与 `gaps` 互补地覆盖 `[0, 1]`；
+  - `total_integral`：各命中段积分之和（`Fraction` 精确值）；
+    `total_integral_float()` 为唯一浮点出口（一次正确舍入，≤0.5 ULP）。
+
+### 行走策略与退化规则
+
+- **跨面行走不重扫全网格**：从当前单元经面邻接表跨到相邻单元；全网格
+  扫描只发生在初始定位与离开网格后的下一次进入定位（且用的是构造期
+  一次性预计算的区间表）。
+- **线恰过共享棱/顶点**：同一时刻多个面同时到期时，候选下一单元取所有
+  到期面的邻居中"区间覆盖 t 之后"者，按**单元下标最小**唯一选定；
+  邻居表无合法候选（线穿顶点进入仅共点的单元）时回退到预计算区间表，
+  同样取下标最小者。长度为零的接触（擦过顶点/棱）不产生命中段，
+  同一长度不会计两次。
+- **沿边界/共享面行走的区间归属唯一**：每个参数 t 至多属于一个命中段，
+  由"下标最小合法单元"规则确定归属。
+- **无效网格拒绝**：存在零体积单元、负定向单元（需先
+  `repair_orientation`）或非流形面时抛 `TraversalError`
+  （`problems` 列出全部可定位问题），不输出看起来完整的穿越序列。
+  负定向单元仍按原审计规则处理：`audit` 报告、`repair_orientation`
+  修复后再穿越。
+
+### 独立核对
+
+- **仿射场解析积分**：测试与 demo 用 ∫(α·X+β)dt 的解析公式
+  （不经过任何单元/重心计算）核对 `total_integral`。
+- **独立逐四面体裁线**：`tests/reference.py` 的 `ref_clip_intervals`
+  对每个四面体独立解半空间不等式（叉积法向，不用面邻接行走、不 import
+  本库），核对命中区间的并集精确一致、间隙互补覆盖 `[0,1]`、
+  每个命中段确属其声明的单元。
+
+
 所有几何/拓扑判定（体积正负、零体积、面朝向、非流形）全部用
 `fractions.Fraction` 精确完成，不存在容差，也**不存在搜索预算耗尽**
 这类不确定结果——本算法是确定性的一次遍历构造。
@@ -138,6 +196,8 @@ from orient_audit import (
 - 修复只做逐单元体积极性，不做全局一致性传播（例如彼此孤立、无法靠
   几何符号定向的零体积簇保持可报告但不可修复——这正是契约要求）。
 - 规模上限 500 个四面体（接口边界，非性能极限）。
+- 线段穿越只支持四面体网格上的分段线性标量场；曲线、高阶场、
+  非流形/退化网格不在契约内（后者直接拒绝而非近似穿越）。
 
 ## 目录
 
@@ -148,9 +208,13 @@ orient_audit/
   exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
   mesh.py       # TetMesh、无序三点面关联
   audit.py      # audit / repair_orientation / AuditReport
+  traverse.py   # sample_segment：线段穿越采样与积分
 tests/
   fixtures.py   # 确定性立方体剖分数据
-  reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
+  reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查、
+                #              逐四面体裁线、仿射场解析积分）
   test_audit.py # 必要测试
+  test_traverse.py # 线段穿越必要测试
 demo.py         # 固定输入演示
+demo_iteration.py # 第二轮演示：线段穿越采样与积分
 ```

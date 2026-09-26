@@ -8,7 +8,10 @@
 - 报告类型：:class:`AuditReport`、:class:`BoundaryFace`、
   :class:`InteriorFace`、:class:`NonManifoldFace`；
 - 异常：:class:`MeshInputError`、:class:`DuplicateTetrahedraError`、
-  :class:`ZeroVolumeError`；
+  :class:`ZeroVolumeError`、:class:`TraversalError`；
+- :func:`sample_segment` -- 线段穿越采样与积分（分段线性场），返回
+  :class:`SegmentTraversal`（命中段 :class:`SegmentHit`、网格外间隙
+  :class:`SegmentGap` 分开列出）；
 - 接口常量：:data:`MAX_TETS`（500）。
 """
 
@@ -25,10 +28,12 @@ from .audit import (
 from .errors import (
     DuplicateTetrahedraError,
     MeshInputError,
+    TraversalError,
     ZeroVolumeError,
 )
 from .exact import MAX_TETS
 from .mesh import FaceIncidence, FaceOccurrence, TetMesh
+from .traverse import SegmentGap, SegmentHit, SegmentTraversal, sample_segment
 
 __all__ = [
     "TetMesh",
@@ -43,5 +48,10 @@ __all__ = [
     "MeshInputError",
     "DuplicateTetrahedraError",
     "ZeroVolumeError",
+    "TraversalError",
+    "sample_segment",
+    "SegmentTraversal",
+    "SegmentHit",
+    "SegmentGap",
     "MAX_TETS",
 ]

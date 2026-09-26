@@ -85,3 +85,95 @@ def ref_outward(verts, tet, ordered_face) -> bool:
     tet_c = tuple(sum(pt[k] for pt in pts) / 4 for k in range(3))
     outward = tuple(face_c[k] - tet_c[k] for k in range(3))
     return sum(normal[k] * outward[k] for k in range(3)) > 0
+
+
+# ---------------------------------------------------------------------------
+# 线段穿越的独立参考（第二轮新增）。
+# 与 orient_audit.traverse 完全独立：不使用面邻接行走，也不调用库中任何
+# 函数，而是对每个四面体独立解半空间不等式组裁出参数区间。
+
+Vec = tuple[Fraction, Fraction, Fraction]
+
+
+def _sub(a: Vec, b: Vec) -> Vec:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _cross(u: Vec, v: Vec) -> Vec:
+    return (
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    )
+
+
+def _dot(u: Vec, v: Vec) -> Fraction:
+    return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+
+
+def ref_clip_intervals(verts, tets, start, end):
+    """逐四面体独立裁线：返回 [(tet_index, lo, hi), ...]（裁剪到 [0,1]）。
+
+    方法：对每个面用叉积法向建立半空间不等式（内侧符号由对顶点确定），
+    沿线段参数 t 解线性不等式组。与库中行走实现不共享任何代码路径。
+    """
+
+    a = _as_vec(start)
+    d = _sub(_as_vec(end), a)
+    out = []
+    for ti, tet in enumerate(tets):
+        p = [_as_vec(verts[k]) for k in tet]
+        lo, hi = Fraction(0), Fraction(1)
+        for i in range(4):
+            q = [p[j] for j in range(4) if j != i]
+            n = _cross(_sub(q[1], q[0]), _sub(q[2], q[0]))
+            # 内侧方向：对顶点一侧。
+            side = _dot(n, _sub(p[i], q[0]))
+            if side == 0:
+                continue  # 退化四面体；参考只用于合法网格
+            # 不等式：side * (n.(X - q0)) >= 0，X = a + t d
+            c0 = side * _dot(n, _sub(a, q[0]))
+            c1 = side * _dot(n, d)
+            if c1 == 0:
+                if c0 < 0:
+                    lo, hi = Fraction(1), Fraction(0)
+                    break
+                continue
+            root = -c0 / c1
+            if c1 > 0:
+                lo = max(lo, root)
+            else:
+                hi = min(hi, root)
+        if lo < hi:
+            out.append((ti, lo, hi))
+    return out
+
+
+def ref_merge_intervals(intervals):
+    """把 [(lo, hi), ...] 合并为互不重叠的区间并集（排序后扫描）。"""
+
+    merged = []
+    for lo, hi in sorted(intervals):
+        if merged and lo <= merged[-1][1]:
+            if hi > merged[-1][1]:
+                merged[-1] = (merged[-1][0], hi)
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def ref_affine_integral(alpha, beta, start, end, intervals):
+    """仿射场 f(X) = alpha.X + beta 在参数区间集上的解析积分。
+
+    X(t) = a + t d，积分为 (alpha.a + beta)(t1-t0) + (alpha.d)(t1^2-t0^2)/2。
+    不经过任何单元/重心计算，是独立的解析参考。
+    """
+
+    a = _as_vec(start)
+    d = _sub(_as_vec(end), a)
+    base = _dot(alpha, a) + beta
+    slope = _dot(alpha, d)
+    total = Fraction(0)
+    for lo, hi in intervals:
+        total += base * (hi - lo) + slope * (hi * hi - lo * lo) / 2
+    return total
