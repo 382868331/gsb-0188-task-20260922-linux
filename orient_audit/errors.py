@@ -61,3 +61,24 @@ class ZeroVolumeError(ValueError):
         super().__init__(
             f"{detail} 体积精确为零，无法通过交换顶点修复，已拒绝（顶点未被移动）"
         )
+
+
+class NonManifoldError(ValueError):
+    """合并后存在被超过两个四面体引用的三点面，按契约拒绝合并。
+
+    属性:
+        faces: 每项为 ``(排序后的三点键, (引用该面的单元下标, ...))``，
+               下标均为合并后网格的新编号，列出全部非流形面。
+    """
+
+    def __init__(
+        self,
+        faces: tuple[tuple[tuple[int, ...], tuple[int, ...]], ...],
+    ) -> None:
+        self.faces = tuple(
+            (tuple(key), tuple(tet_indices)) for key, tet_indices in faces
+        )
+        lines = ["检测到非流形面（同一三点面被超过两个四面体引用），已拒绝合并:"]
+        for key, tet_indices in self.faces:
+            lines.append(f"  面 {tuple(key)} 被单元 {tuple(tet_indices)} 引用")
+        super().__init__("\n".join(lines))

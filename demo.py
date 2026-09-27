@@ -24,9 +24,11 @@ from fractions import Fraction
 from orient_audit import (
     DuplicateTetrahedraError,
     MeshInputError,
+    NonManifoldError,
     TetMesh,
     ZeroVolumeError,
     audit,
+    merge_meshes,
     repair_orientation,
 )
 
@@ -171,6 +173,60 @@ def main() -> None:
             build()
         except MeshInputError as exc:
             print(f"  {label} -> {type(exc).__name__} 于 {exc.location}: 已拒绝")
+
+    # ============ C. 两份网格按显式配对合并 ============
+    print()
+    print("=" * 68)
+    print("C. 显式重合点合并（不按距离自动吸附）")
+    print("=" * 68)
+
+    # 第一份：单位四面体；第二份与它共享一个三点面，位于面另一侧。
+    a_mesh = TetMesh.build(
+        ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)),
+        ((0, 1, 2, 3),),
+    )
+    b_verts = ((1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1))
+    b_mesh = TetMesh.build(b_verts, ((0, 1, 2, 3),))
+    pairs = ((1, 0), (2, 1), (3, 2))
+
+    print("[C1] 明确配对 3 个坐标精确相等的点：")
+    merged = merge_meshes(a_mesh, b_mesh, pairs)
+    mp = merged.mapping
+    print(f"  合并后顶点数 4+4-3 = {len(merged.mesh.vertices)}，单元数 2")
+    print(f"  第一份顶点旧->新: {mp.first_vertex_map}")
+    print(f"  第二份顶点旧->新: {mp.second_vertex_map}")
+    for new_index, old_a, old_b in mp.merged_vertices:
+        print(f"    新点 {new_index} = 第一份 verts[{old_a}] = 第二份 verts[{old_b}]")
+    print(f"  单元旧->新: 第一份 {mp.first_tet_map}，第二份 {mp.second_tet_map}")
+    print(f"  合并后非流形: {not merged.report.is_manifold}，"
+          f"零体积单元: {list(merged.report.zero_tets)}")
+    print(f"  内面 {merged.report.interior_faces[0].key} 诱导方向相反: "
+          f"{merged.report.interior_faces[0].opposite}")
+
+    # C2. 坐标很近但不相等：不允许配对，直接拒绝，不发生吸附。
+    near_mesh = TetMesh.build(
+        ((1, 0, Fraction(1, 10**9)), (0, 1, 0), (0, 0, 1), (1, 1, 1)),
+        ((0, 1, 2, 3),),
+    )
+    print("[C2] 近点（差 1e-9）要求配对：")
+    try:
+        merge_meshes(a_mesh, near_mesh, pairs)
+    except MeshInputError as exc:
+        print(f"  {type(exc).__name__} 于 {exc.location}: 已拒绝（不自动吸附）")
+
+    # C3. 合并后共享面被 3 个单元引用 -> 非流形，原子失败。
+    nm_b = TetMesh.build(
+        (*b_verts, (-1, -1, -1)),
+        ((0, 1, 2, 3), (0, 1, 2, 4)),
+    )
+    print("[C3] 配对后同一面被 3 个单元引用：")
+    try:
+        merge_meshes(a_mesh, nm_b, pairs)
+    except NonManifoldError as exc:
+        key, tet_indices = exc.faces[0]
+        print(f"  {type(exc).__name__}: 合并后面 {key} 被单元 {list(tet_indices)} "
+              "引用，已拒绝（两份原网格仍可使用）")
+    assert len(a_mesh.vertices) == 4 and len(nm_b.tets) == 2
 
     elapsed = time.perf_counter() - t0
     print()

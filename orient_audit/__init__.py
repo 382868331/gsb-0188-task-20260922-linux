@@ -25,9 +25,11 @@ from .audit import (
 from .errors import (
     DuplicateTetrahedraError,
     MeshInputError,
+    NonManifoldError,
     ZeroVolumeError,
 )
 from .exact import MAX_TETS
+from .merge import MergeMapping, MergeResult, merge_meshes
 from .mesh import FaceIncidence, FaceOccurrence, TetMesh
 
 __all__ = [
@@ -40,8 +42,12 @@ __all__ = [
     "BoundaryFace",
     "InteriorFace",
     "NonManifoldFace",
+    "MergeResult",
+    "MergeMapping",
+    "merge_meshes",
     "MeshInputError",
     "DuplicateTetrahedraError",
     "ZeroVolumeError",
+    "NonManifoldError",
     "MAX_TETS",
 ]

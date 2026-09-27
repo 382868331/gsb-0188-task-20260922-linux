@@ -26,7 +26,9 @@ python demo.py
 from orient_audit import (
     TetMesh, audit, repair_orientation,      # 核心入口
     AuditReport, BoundaryFace, InteriorFace, NonManifoldFace,  # 结果类型
+    merge_meshes, MergeResult, MergeMapping,  # 两份网格显式合并
     MeshInputError, DuplicateTetrahedraError, ZeroVolumeError, # 异常
+    NonManifoldError,                         # 合并后的非流形拒绝
     MAX_TETS,                                # 500
 )
 ```
@@ -75,6 +77,38 @@ from orient_audit import (
 - **修复不移动顶点**：返回新网格，顶点坐标对象恒等保留（有断言守护）；
 - 非流形/定向冲突属于拓扑状态，由 `audit` 报告，不阻止逐单元定向修复。
 
+### `merge_meshes(first, second, merge_pairs=()) -> MergeResult`
+
+把两份网格拼在一起。**合并完全显式 opt-in**：
+
+- `merge_pairs` 是 `(第一份顶点下标, 第二份顶点下标)` 的序列；
+- 只有被明确配对、且坐标在 `Fraction` 意义下**精确相等**的点才会视为
+  同一点。**不存在距离容差，也不会自动吸附**：坐标不同（哪怕只差
+  `1/10^9`）的配对在 `merge_pairs[k][0/1]` 处抛 `MeshInputError`；
+  未列出的重合点即使坐标完全相同也保持各自独立的编号；
+- 一个旧顶点至多参与一个配对（一对一），重复使用同样带定位拒绝。
+
+成功时返回 `MergeResult(mesh, mapping, report)`：
+
+| 字段 | 含义 |
+|---|---|
+| `mesh` | 合并后的新 `TetMesh` |
+| `report` | 对合并后网格重新执行的 `AuditReport` |
+| `mapping.first_vertex_map` / `second_vertex_map` | 两份旧顶点下标 → 新下标 |
+| `mapping.vertex_origins` | 新顶点下标 → 一个或两个 `(来源, 旧下标)`（来源 0/1） |
+| `mapping.merged_vertices` | `(新下标, 第一份旧下标, 第二份旧下标)` 列表 |
+| `mapping.first_tet_map` / `second_tet_map` / `tet_origins` | 单元的新旧编号关系 |
+
+合并后会在新编号体系下**重新检查**：重复单元（`TetMesh.build` 抛
+`DuplicateTetrahedraError`）、零体积单元（`ZeroVolumeError`）、
+非流形面（面被 >2 个单元引用，抛 `NonManifoldError`，其 `faces`
+列出 `(三点键, 单元下标)`）。合并后单元总数仍受 `MAX_TETS=500` 限制。
+单元负向 / 共享面同向不阻止合并（可用 `audit` 查看、
+`repair_orientation` 修复）。
+
+失败时不返回半份结果：所有检查在一次性构造的新网格上完成，两个入参
+网格本身不可变，失败后仍可继续使用。
+
 ## 面关联语义（无序三点键）
 
 每个面取排序后的三个顶点下标作为键。一个四面体的四个诱导面（外法向
@@ -112,7 +146,11 @@ from orient_audit import (
 - **重复单元在构造期拒绝**：重复体会让面的关联计数虚增（例如把合法内面
   伪装成非流形），因此必须作为独立错误先于几何处理报出，而不是混进审计。
 - **`audit` 宽容、`repair` 严格**：审计如实报告零体积单元；修复对零体积
-  直接拒绝（交换顶点不可能让零行列式非零）。
+   直接拒绝（交换顶点不可能让零行列式非零）。
+- **合并只认显式、精确的重合配对**：公共边界上编号不同的点是否同点是
+  调用方的拓扑决定，不允许几何启发式代替；因此没有距离阈值，也就不会
+  因“很近”而误并两个点。合并结果必须重新过一遍完整校验，保证重复体、
+  退化体与非流形不会借编号合流漏检。
 - 连通分量按“共享完整三点面”的并查集计算；仅共享棱或点不算相连。
 
 ## 验收要点与独立核对
@@ -128,6 +166,9 @@ from orient_audit import (
 - 已覆盖：翻转单元修复、重复体（含排列重复）、共面退化拒绝、
   三单元共面的非流形、共享面同向冲突、多个连通分量、500 上限边界、
   bool/float/NaN/Infinity/越界等非法输入定位。
+- 合并覆盖：显式精确配对、未列出的重合点不合并、近点拒绝（无吸附）、
+  配对越界/重复/类型错误定位、合并后重复体/零体积/非流形原子拒绝、
+  新旧顶点与单元编号双向映射。
 
 ## 已知限制（本题有限协议，不宣称行业标准兼容）
 
@@ -145,12 +186,14 @@ from orient_audit import (
 orient_audit/
   __init__.py   # 公开接口
   errors.py     # MeshInputError / DuplicateTetrahedraError / ZeroVolumeError
-  exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
-  mesh.py       # TetMesh、无序三点面关联
-  audit.py      # audit / repair_orientation / AuditReport
-tests/
-  fixtures.py   # 确定性立方体剖分数据
-  reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
-  test_audit.py # 必要测试
-demo.py         # 固定输入演示
-```
+   exact.py      # 有理坐标解析、精确 3x3 行列式、输入上限
+   mesh.py       # TetMesh、无序三点面关联
+   audit.py      # audit / repair_orientation / AuditReport
+  merge.py      # merge_meshes / MergeResult / MergeMapping
+ tests/
+   fixtures.py   # 确定性立方体剖分数据
+   reference.py  # 独立参考（4x4 Bareiss 行列式、面通量、外法向检查）
+   test_audit.py # 必要测试
+  test_merge.py # 显式配对合并与合并后复查的测试
+ demo.py         # 固定输入演示
+ ```
