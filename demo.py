@@ -23,10 +23,12 @@ from fractions import Fraction
 
 from orient_audit import (
     DuplicateTetrahedraError,
+    MergePointError,
     MeshInputError,
     TetMesh,
     ZeroVolumeError,
     audit,
+    merge_meshes,
     repair_orientation,
 )
 
@@ -171,6 +173,56 @@ def main() -> None:
             build()
         except MeshInputError as exc:
             print(f"  {label} -> {type(exc).__name__} 于 {exc.location}: 已拒绝")
+
+    # ============ C. 两份网格显式点对合并 ============
+    print()
+    print("=" * 68)
+    print("C. 两立方体拼接：只合并显式指定的 4 个接合面点（无自动吸附）")
+    print("=" * 68)
+
+    # B 是 A 关于 x=1 的镜像剖分（接合面两侧同对角，共形）。
+    b_verts = (
+        (2, 0, 0), (1, 0, 0), (1, 1, 0), (2, 1, 0),
+        (2, 0, 1), (1, 0, 1), (1, 1, 1), (2, 1, 1),
+    )
+    b_tets = (
+        (0, 1, 5, 2),
+        (0, 2, 7, 3),
+        (0, 4, 7, 5),
+        (2, 5, 7, 6),
+        (0, 2, 5, 7),
+    )
+    mesh_a = TetMesh.build(VERTICES, TETS)
+    mesh_b = TetMesh.build(b_verts, b_tets)
+    # 只列出接合面 x=1 上坐标完全相同的 4 对顶点（两侧编号恰都是 1,2,5,6）。
+    pairs = ((1, 1), (2, 2), (5, 5), (6, 6))
+    merged = merge_meshes(mesh_a, mesh_b, pairs)
+    mr = merged.report
+    print("  A 旧编号 -> 新编号:", list(merged.vertex_map_a))
+    print("  B 旧编号 -> 新编号:", list(merged.vertex_map_b))
+    print(f"  合并顶点数: 8+8-4 = {len(merged.mesh.vertices)}"
+          f"，单元数: {len(merged.mesh.tets)}")
+    print(f"  总精确有向体积: {mr.total_signed_volume}（1+1）")
+    print(f"  边界面数: {len(mr.boundary_faces)}（两个立方体外表面 24 - 接合面 4）")
+    print(f"  非流形面: {len(mr.non_manifold_faces)}，连通分量: {len(mr.components)}")
+    assert mr.total_signed_volume == Fraction(2)
+    assert len(mr.boundary_faces) == 20
+    assert len(mr.components) == 1
+    assert not mr.has_non_manifold
+
+    # 不列出任何点对：即使坐标重合也各自独立，绝不自动吸附。
+    separate = merge_meshes(mesh_a, mesh_b, ())
+    print(f"  不给点对时: 顶点数 {len(separate.mesh.vertices)}（16，不合并），"
+          f"连通分量 {len(separate.report.components)}")
+    assert len(separate.mesh.vertices) == 16
+
+    # 指定一对位置不同的点：拒绝（不按距离近吸附），原网格保持不变。
+    print("  错误点对（A[1] 与 B[0] 坐标不同）：")
+    try:
+        merge_meshes(mesh_a, mesh_b, ((1, 0),))
+    except MergePointError as exc:
+        print(f"    -> {type(exc).__name__} 于 {exc.location}：已拒绝，不留下半成品")
+    assert len(mesh_b.tets) == 5
 
     elapsed = time.perf_counter() - t0
     print()

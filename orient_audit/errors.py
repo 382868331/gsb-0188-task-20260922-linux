@@ -61,3 +61,20 @@ class ZeroVolumeError(ValueError):
         super().__init__(
             f"{detail} 体积精确为零，无法通过交换顶点修复，已拒绝（顶点未被移动）"
         )
+
+
+class MergePointError(MeshInputError):
+    """调用方显式指定的可合并点对非法。
+
+    触发条件（均带 ``location`` 定位）：
+
+    - 点对结构非法（不是恰好两个 int 下标，或出现 bool / 越界）；
+    - 同一网格内的下标被重复指定（一对多，合并关系必须是确定的单射）；
+    - 指定的两点坐标并不完全相同（精确有理比较）——本库**绝不**按距离
+      近自动吸附，位置不一致的点对是调用方错误。
+
+    合并阶段发现的重复单元仍抛 :class:`DuplicateTetrahedraError`，
+    零体积单元仍抛 :class:`ZeroVolumeError`；非流形属于几何状态，
+    由合并结果中的 :class:`~orient_audit.audit.AuditReport` 如实报告，
+    不作为异常。
+    """
